@@ -1,0 +1,33 @@
+name: 构建内核
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: "内核版本号 (如: 7.1)"
+        required: true
+        default: "7.1"
+
+jobs:
+  build:
+    name: "构建内核 v${{ github.event.inputs.kernel_version || '7.1' }}"
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+  
+    steps:
+      - name: "1. 检出代码"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+    
+      - name: "💾 设置 ccache 编译缓存"
+        uses: actions/cache@v4
+        id: cache-ccache
+        with:
+          path: /home/runner/.ccache
+          key: ${{ runner.os }}-ccache-unified-kernel-${{ github.event.inputs.kernel_version || '7.1' }}-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-unified-kernel-${{ github.event.inputs.kernel_version || '7.1' }}-
+            ${{ runner.os }}-ccache-unified-kernel-
