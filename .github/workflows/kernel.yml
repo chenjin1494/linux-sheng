@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    name: "构建内核 v${{ github.event.inputs.kernel_version || '7.1' }}"
+    name: "构建内核 ${{ github.event.inputs.kernel_version || '7.1' }}"
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
@@ -31,3 +31,77 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-unified-kernel-${{ github.event.inputs.kernel_version || '7.1' }}-
             ${{ runner.os }}-ccache-unified-kernel-
+
+      - name: "3. 部署 LLVM 交叉编译环境"
+        run: |
+          echo "正在安装必要的构建工具..."
+          sudo apt update
+          sudo apt install -y build-essential flex bison libssl-dev libelf-dev bc ccache clang llvm lld wget xz-utils
+          echo "构建工具安装完成"
+
+          mkdir -p /home/runner/.ccache
+          ccache --set-config=max_size=10G
+          ccache --set-config=cache_dir=/home/runner/.ccache
+          ccache --set-config=sloppiness=file_macro,locale,time_macros
+
+      - name: "4. 编译内核"
+        id: build
+        run: |
+          echo "开始编译内核版本 ${{ github.event.inputs.kernel_version || '7.1' }}"
+          
+          export CCACHE_DIR=/home/runner/.ccache
+          export CCACHE_MAXSIZE=10G
+          export PATH="/usr/lib/ccache:$PATH"
+          
+          chmod +x sheng-kernel_build.sh
+          bash sheng-kernel_build.sh "${{ github.event.inputs.kernel_version || '7.1' }}"
+          
+          echo "内核编译完成"
+          ccache --show-stats || true
+
+      - name: "5. 收集并统计编译产物"
+        id: collect_artifacts
+        run: |
+          PKG_COUNT=$(ls -1 *.deb 2>/dev/null | wc -l)
+          echo "共找到 $PKG_COUNT 个 Debian 包文件"
+          echo "pkg_count=$PKG_COUNT" >> $GITHUB_OUTPUT
+
+      - name: "6. 上传生成的配置文件"
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-config
+          path: sm8550.config
+
+      - name: "7. 上传系统驱动包 (.deb)"
+        uses: actions/upload-artifact@v4
+        with:
+          name: unified-kernel-debs-${{ github.event.inputs.kernel_version || '7.1' }}
+          path: "*.deb"
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: "8. 上传启动镜像 (boot.img)"
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot_images
+          path: |
+            boot_sheng_singleboot.img
+            boot_sheng_dualboot.img
+
+      - name: "9. 自动发布 GitHub Release"
+        if: steps.collect_artifacts.outputs.pkg_count > 0 && github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: kernel-${{ github.event.inputs.kernel_version || '7.1' }}
+          name: "Kernel ${{ github.event.inputs.kernel_version || '7.1' }}"
+          body: |
+            **Kernel ${{ github.event.inputs.kernel_version || '7.1' }}**
+            
+          draft: false
+          prerelease: false
+          files: |
+            *.deb
+            *.img
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
