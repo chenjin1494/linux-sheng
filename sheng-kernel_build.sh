@@ -95,6 +95,7 @@ package_modules_and_boot() {
     install -Dm644 .config                     "${pkgdir}/boot/config-${kernel_version}"
 
     info "正在生成 boot.img（单/双系统）..."
+    chmod +x ../mkbootimg
     cat arch/arm64/boot/Image.gz \
         arch/arm64/boot/dts/qcom/sm8550-xiaomi-sheng.dtb > Image.gz-dtb_sheng
     mv Image.gz-dtb_sheng zImage_sheng
