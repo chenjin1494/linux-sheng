@@ -367,7 +367,7 @@ build_fastrpc_package() {
 
     info "正在安装 fastrpc 构建依赖..."
     sudo apt-get install -y build-essential autoconf automake libtool pkg-config \
-        git wget unzip dpkg-dev libyaml-dev linux-libc-dev
+        git wget unzip dpkg-dev libyaml-dev libbsd-dev linux-libc-dev
 
     info "正在下载 fastrpc 源码..."
     wget -q https://github.com/qualcomm/fastrpc/archive/refs/tags/v1.0.6.zip \
