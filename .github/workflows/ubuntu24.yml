@@ -1,12 +1,129 @@
-name: Build Ubuntu 24
+name: Build Ubuntu 24.04 Desktop
 
 on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: "内核版本号（如：7.1）"
+        description: '内核版本 (如 7.1)'
         required: true
-        default: "7.1"
+        default: '7.1'
+      desktop_env:
+        description: '桌面环境'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - gnome
+          - kde
+      root_password:
+        description: 'Root 密码'
+        required: false
+        default: '1234'
+      user_name:
+        description: '用户名'
+        required: false
+        default: 'luser'
+      user_password:
+        description: '用户密码'
+        required: false
+        default: 'luser'
+      hostname:
+        description: '主机名'
+        required: false
+        default: 'sheng-ubuntu24'
+
+permissions:
+  contents: write
 
 jobs:
-    ...
+  prepare-release:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+      desktop_matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Generate release tag
+        id: tag
+        run: |
+          TAG="ubuntu24-$(date -u '+%Y%m%d')-${GITHUB_SHA::8}"
+          echo "release_tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Resolve desktop matrix
+        id: set-matrix
+        run: |
+          case "${{ inputs.desktop_env }}" in
+            all)   echo 'matrix={"desktop_env":["gnome","kde"]}'  >> "$GITHUB_OUTPUT" ;;
+            gnome) echo 'matrix={"desktop_env":["gnome"]}'        >> "$GITHUB_OUTPUT" ;;
+            kde)   echo 'matrix={"desktop_env":["kde"]}'          >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: "Ubuntu 24.04 Desktop - ${{ steps.tag.outputs.release_tag }}"
+          body: |
+            Ubuntu 24.04 for Xiaomi Pad 6S Pro (sheng)
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-desktop:
+    name: Build Ubuntu 24.04 Desktop (${{ matrix.desktop_env }})
+    runs-on: ubuntu-24.04-arm
+    needs: prepare-release
+    strategy:
+      matrix: ${{ fromJSON(needs.prepare-release.outputs.desktop_matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt update && sudo apt install -y debootstrap libarchive-tools p7zip-full curl wget android-sdk-libsparse-utils
+
+      - name: Download kernel
+        run: |
+          KERNEL_VER="${{ github.event.inputs.kernel_version }}"
+          if [ -z "$KERNEL_VER" ]; then KERNEL_VER="7.1"; fi
+
+          gh release download "kernel-${KERNEL_VER}" \
+            --pattern "*.deb" --repo "${{ github.repository }}" --clobber
+          ls -la *.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build RootFS
+        id: build
+        run: |
+          KERNEL_VER="${{ github.event.inputs.kernel_version }}"
+          if [ -z "$KERNEL_VER" ]; then KERNEL_VER="7.1"; fi
+
+          chmod +x sheng-ubuntu24-rootfs_build.sh
+          sudo ./sheng-ubuntu24-rootfs_build.sh \
+            "${KERNEL_VER}" \
+            "${{ matrix.desktop_env }}" \
+            "${{ inputs.root_password }}" \
+            "${{ inputs.user_name }}" \
+            "${{ inputs.user_password }}" \
+            "${{ inputs.hostname }}"
+
+          SEVEN_Z_FILE=$(ls ubuntu24_${{ matrix.desktop_env }}_*.7z | head -1)
+          echo "filename=$(basename "$SEVEN_Z_FILE")" >> $GITHUB_OUTPUT
+          echo "path=$SEVEN_Z_FILE" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu24-${{ matrix.desktop_env }}
+          path: ${{ steps.build.outputs.path }}
+          retention-days: 7
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.release_tag }}
+          files: ${{ steps.build.outputs.path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
