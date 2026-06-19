@@ -435,10 +435,10 @@ usr_merge_and_package() {
 # 主流程
 # ============================================================
 main() {
-    # setup_env
-    # fetch_kernel_source
-    # build_kernel
-    # package_modules_and_boot
+    setup_env
+    fetch_kernel_source
+    build_kernel
+    package_modules_and_boot
 
     build_firmware_package
     build_alsa_package
