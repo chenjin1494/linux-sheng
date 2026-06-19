@@ -137,7 +137,7 @@ apply_system_quirks() {
 
     chroot rootdir bash -c "echo 'root:147258' | chpasswd"
     chroot rootdir useradd -m -s /bin/bash dctc1494 || true
-    chroot rootdir bash -c "echo '147258:147258' | chpasswd"
+    chroot rootdir bash -c "echo 'dctc1494:147258' | chpasswd"
     chroot rootdir usermod -aG wheel,audio,video,input dctc1494
     echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" > rootdir/etc/sudoers.d/wheel
     chmod 440 rootdir/etc/sudoers.d/wheel
