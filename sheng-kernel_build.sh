@@ -4,6 +4,7 @@ set -euo pipefail
 # ============================================================
 # 配置变量
 # ============================================================
+: <<'KERNEL_COMMENT'
 KERNEL_SOURCE_REPO="map220v/sm8550-mainline"
 KERNEL_BRANCH="sheng-${1:-7.1}"
 
@@ -12,6 +13,7 @@ CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-10G}"
 
 # 打包目录名（相对于仓库根目录）
 PKG_DIR="linux-xiaomi-sheng"
+KERNEL_COMMENT
 
 # 需要 trap 清理的临时目录列表
 _TEMP_DIRS=()
@@ -42,6 +44,7 @@ _mktemp() {
 # 阶段函数
 # ============================================================
 
+: <<'KERNEL_COMMENT'
 setup_env() {
     info "初始化编译环境..."
     mkdir -p "$CCACHE_DIR"
@@ -114,6 +117,7 @@ package_modules_and_boot() {
     cd ..
     info "boot.img 生成完毕"
 }
+KERNEL_COMMENT
 
 build_firmware_package() {
     local fw_dir
@@ -195,6 +199,222 @@ SCRIPT
     info "sheng-devauth.deb 打包完成"
 }
 
+build_mipps_auth_package() {
+    local repo_dir src_dir pkg_src work pkg out
+    repo_dir="$(_mktemp)"
+
+    info "正在拉取 xiaomi-mipps-auth 源码..."
+    git clone https://github.com/ianchb/xiaomi-mipps-auth.git \
+        --depth 1 "$repo_dir"
+
+    info "正在构建 xiaomi-mipps-auth.deb..."
+    src_dir="$repo_dir"
+    pkg_src="$src_dir"
+    work="$repo_dir/deb-work"
+    pkg="$work/pkg"
+    out="./xiaomi-mipps-auth_0.13_arm64.deb"
+
+    rm -rf "$work"
+    mkdir -p "$pkg/DEBIAN"
+    mkdir -p "$pkg/usr/libexec"
+    mkdir -p "$pkg/usr/lib/systemd/system"
+    mkdir -p "$pkg/usr/lib/udev/rules.d"
+
+    cp -a "$pkg_src/DEBIAN/." "$pkg/DEBIAN/"
+    install -m 0755 "$src_dir/xiaomi-mipps-auth" "$pkg/usr/libexec/xiaomi-mipps-auth"
+    install -m 0644 "$pkg_src/xiaomi-mipps-auth.service" \
+        "$pkg/usr/lib/systemd/system/xiaomi-mipps-auth.service"
+    install -m 0644 "$pkg_src/90-xiaomi-mipps-auth.rules" \
+        "$pkg/usr/lib/udev/rules.d/90-xiaomi-mipps-auth.rules"
+    chmod 0755 "$pkg/DEBIAN/postinst" "$pkg/DEBIAN/postrm"
+
+    mkdir -p "$(dirname -- "$out")"
+    dpkg-deb --build --root-owner-group "$pkg" "$out"
+    info "xiaomi-mipps-auth.deb 打包完成：${out}"
+}
+
+build_sensors_package() {
+    local repo_dir pkg out
+    repo_dir="$(_mktemp)"
+
+    info "正在拉取 sheng-sensors-file..."
+    git clone https://github.com/alghiffaryfa19/sheng-sensors-file.git \
+        --depth 1 "$repo_dir"
+
+    info "正在构建 sheng-sensors.deb..."
+    pkg="$repo_dir/pkg"
+    out="./sheng-sensors_1.0_all.deb"
+
+    # 复制整个 usr/ 文件树
+    cp -a "$repo_dir/usr" "$pkg/"
+
+    # 生成 DEBIAN/control
+    mkdir -p "$pkg/DEBIAN"
+    cat > "$pkg/DEBIAN/control" << 'EOF'
+Package: sheng-sensors
+Version: 1.0
+Architecture: all
+Maintainer: sheng-builder
+Description: Sensor configuration files for Xiaomi Pad 6S Pro (sheng)
+EOF
+
+    dpkg-deb --build --root-owner-group "$pkg" "$out"
+    info "sheng-sensors.deb 打包完成：${out}"
+}
+
+build_libssc_package() {
+    local repo_dir
+    repo_dir="$(_mktemp)"
+
+    info "正在安装 libssc 构建依赖..."
+    sudo apt install -y ninja-build pkg-config python3-pip \
+        libglib2.0-dev libprotobuf-c-dev libqmi-glib-dev \
+        libmbim-glib-dev protobuf-compiler protobuf-c-compiler
+    pip3 install --upgrade meson
+
+    info "正在拉取 libssc 源码..."
+    git clone https://codeberg.org/alghiffaryfa19/libssc.git \
+        --depth 1 "$repo_dir/source"
+
+    info "正在构建 libssc..."
+    cd "$repo_dir/source"
+    meson setup build --prefix=/usr
+    meson compile -C build
+    DESTDIR="$repo_dir/source/stage" meson install -C build
+    cd - >/dev/null
+
+    info "正在打包 libssc.deb..."
+    local pkg="$repo_dir/deb"
+    mkdir -p "$pkg/DEBIAN" "$pkg/usr"
+    cp -r "$repo_dir/source/stage/usr/"* "$pkg/usr/"
+
+    PKGNAME=libssc PKGVERSION=0.4.2 PKGREL=1 \
+    cat > "$pkg/DEBIAN/control" << CONTROL
+Package: libssc
+Version: 0.4.2-1
+Section: libs
+Priority: optional
+Architecture: arm64
+Maintainer: Fauzan Amir Al Ghiffary <alghiffaryfa19@gmail.com>
+Depends: libglib2.0-0, libprotobuf-c1, libqmi-glib5
+Description: Library to expose Qualcomm Sensor Core sensors
+ libssc userspace library for Qualcomm SSC.
+CONTROL
+
+    dpkg-deb --build "$pkg" "./libssc_0.4.2-1_arm64.deb"
+    info "libssc.deb 打包完成：libssc_0.4.2-1_arm64.deb"
+}
+
+build_iio_sensor_proxy_package() {
+    local repo_dir pkgver
+    repo_dir="$(_mktemp)"
+    pkgver="3.9"
+
+    info "正在安装 iio-sensor-proxy 构建依赖..."
+    sudo apt install -y ninja-build pkg-config wget \
+        libglib2.0-dev libgudev-1.0-dev libpolkit-gobject-1-dev \
+        libsystemd-dev libdbus-1-dev systemd \
+        libqmi-glib-dev libmbim-glib-dev \
+        protobuf-compiler protobuf-c-compiler
+    pip3 install --upgrade meson 2>/dev/null || true
+
+    info "正在下载 iio-sensor-proxy 源码..."
+    wget -q "https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/${pkgver}/iio-sensor-proxy-${pkgver}.tar.gz"
+    tar -xf "iio-sensor-proxy-${pkgver}.tar.gz" -C "$repo_dir"
+    rm -f "iio-sensor-proxy-${pkgver}.tar.gz"
+
+    info "正在安装 libssc（供 iio-sensor-proxy 链接）..."
+    if [[ -f "./libssc_0.4.2-1_arm64.deb" ]]; then
+        sudo dpkg -i "./libssc_0.4.2-1_arm64.deb"
+        sudo ldconfig
+    else
+        warn "libssc.deb 未找到，跳过安装（iio-sensor-proxy 构建可能失败）"
+    fi
+
+    info "正在构建 iio-sensor-proxy（SSC patched）..."
+    cd "$repo_dir/iio-sensor-proxy-${pkgver}"
+    meson setup output \
+        --prefix=/usr \
+        -Db_lto=true \
+        -Dssc-support=enabled \
+        -Dsystemdsystemunitdir=/usr/lib/systemd/system
+    meson compile -C output
+
+    local stage="$repo_dir/iio-sensor-proxy-${pkgver}/stage"
+    DESTDIR="$stage" meson install --no-rebuild -C output
+    cd - >/dev/null
+
+    info "正在打包 iio-sensor-proxy.deb..."
+    local pkg="$repo_dir/deb"
+    mkdir -p "$pkg/DEBIAN"
+    cp -r "$stage/usr" "$pkg/"
+
+    cat > "$pkg/DEBIAN/control" << CONTROL
+Package: iio-sensor-proxy
+Version: 9999${pkgver}-6
+Section: misc
+Priority: optional
+Architecture: arm64
+Maintainer: Dylan Van Assche <me@dylanvanassche.be>
+Depends: dbus, libglib2.0-0, libgudev-1.0-0, libpolkit-gobject-1-0
+Description: IIO sensors to D-Bus proxy (SSC patched)
+ iio-sensor-proxy with Qualcomm SSC support patches.
+CONTROL
+
+    dpkg-deb --build "$pkg" "./iio-sensor-proxy_9999${pkgver}-6_arm64.deb"
+    info "iio-sensor-proxy.deb 打包完成：iio-sensor-proxy_9999${pkgver}-6_arm64.deb"
+}
+
+build_fastrpc_package() {
+    local repo_dir
+    repo_dir="$(_mktemp)"
+
+    info "正在安装 fastrpc 构建依赖..."
+    sudo apt install -y automake autoconf libtool pkg-config libyaml-dev
+
+    info "正在拉取 fastrpc 源码..."
+    git clone https://github.com/qualcomm/fastrpc.git \
+        --depth 1 "$repo_dir"
+
+    info "正在构建 fastrpc..."
+    cd "$repo_dir"
+    ./gitcompile
+    cd - >/dev/null
+
+    info "正在打包 fastrpc.deb..."
+    local pkg="$repo_dir/deb"
+    mkdir -p "$pkg/DEBIAN" "$pkg/usr/lib" "$pkg/usr/bin"
+
+    # 安装库文件（6 个 .so）
+    install -m 0644 "$repo_dir/src/.libs/libadsprpc.so"            "$pkg/usr/lib/libadsprpc.so"
+    install -m 0644 "$repo_dir/src/.libs/libadsp_default_listener.so" "$pkg/usr/lib/libadsp_default_listener.so"
+    install -m 0644 "$repo_dir/src/.libs/libcdsprpc.so"            "$pkg/usr/lib/libcdsprpc.so"
+    install -m 0644 "$repo_dir/src/.libs/libcdsp_default_listener.so" "$pkg/usr/lib/libcdsp_default_listener.so"
+    install -m 0644 "$repo_dir/src/.libs/libsdsprpc.so"            "$pkg/usr/lib/libsdsprpc.so"
+    install -m 0644 "$repo_dir/src/.libs/libsdsp_default_listener.so" "$pkg/usr/lib/libsdsp_default_listener.so"
+
+    # 安装守护进程（3 个 rpcd）
+    install -m 0755 "$repo_dir/src/adsprpcd" "$pkg/usr/bin/adsprpcd"
+    install -m 0755 "$repo_dir/src/cdsprpcd" "$pkg/usr/bin/cdsprpcd"
+    install -m 0755 "$repo_dir/src/sdsprpcd" "$pkg/usr/bin/sdsprpcd"
+
+    cat > "$pkg/DEBIAN/control" << CONTROL
+Package: qualcomm-fastrpc
+Version: 1.0-1
+Section: libs
+Priority: optional
+Architecture: arm64
+Maintainer: sheng-builder
+Depends: libyaml-0-2
+Description: Qualcomm FastRPC userspace libraries and daemons
+ FastRPC user-space libraries and daemons for ADSP, CDSP, and SDSP
+ communication on Qualcomm SoCs.
+CONTROL
+
+    dpkg-deb --build --root-owner-group "$pkg" "./qualcomm-fastrpc_1.0-1_arm64.deb"
+    info "qualcomm-fastrpc.deb 打包完成：qualcomm-fastrpc_1.0-1_arm64.deb"
+}
+
 usr_merge_and_package() {
     info "正在进行 UsrMerge 路径融合..."
     for pkg in linux-xiaomi-sheng alsa-xiaomi-sheng; do
@@ -215,14 +435,19 @@ usr_merge_and_package() {
 # 主流程
 # ============================================================
 main() {
-    setup_env
-    fetch_kernel_source
-    build_kernel
-    package_modules_and_boot
+    # setup_env
+    # fetch_kernel_source
+    # build_kernel
+    # package_modules_and_boot
 
     build_firmware_package
     build_alsa_package
     build_devauth_package
+    build_mipps_auth_package
+    build_sensors_package
+    build_libssc_package
+    build_iio_sensor_proxy_package
+    build_fastrpc_package
 
     usr_merge_and_package
 
