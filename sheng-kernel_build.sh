@@ -370,7 +370,7 @@ build_fastrpc_package() {
     repo_dir="$(_mktemp)"
 
     info "正在安装 fastrpc 构建依赖..."
-    sudo apt install -y automake autoconf libtool pkg-config libyaml-dev
+    sudo apt install -y automake autoconf libtool pkg-config libyaml-dev libbsd-dev
 
     info "正在拉取 fastrpc 源码..."
     git clone https://github.com/qualcomm/fastrpc.git \
