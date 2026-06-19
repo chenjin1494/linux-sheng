@@ -4,7 +4,6 @@ set -euo pipefail
 # ============================================================
 # 配置变量
 # ============================================================
-: <<'KERNEL_COMMENT'
 KERNEL_SOURCE_REPO="map220v/sm8550-mainline"
 KERNEL_BRANCH="sheng-${1:-7.1}"
 
@@ -13,7 +12,6 @@ CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-10G}"
 
 # 打包目录名（相对于仓库根目录）
 PKG_DIR="linux-xiaomi-sheng"
-KERNEL_COMMENT
 
 # 需要 trap 清理的临时目录列表
 _TEMP_DIRS=()
@@ -44,7 +42,6 @@ _mktemp() {
 # 阶段函数
 # ============================================================
 
-: <<'KERNEL_COMMENT'
 setup_env() {
     info "初始化编译环境..."
     mkdir -p "$CCACHE_DIR"
@@ -117,7 +114,6 @@ package_modules_and_boot() {
     cd ..
     info "boot.img 生成完毕"
 }
-KERNEL_COMMENT
 
 build_firmware_package() {
     local fw_dir
@@ -366,53 +362,57 @@ CONTROL
 }
 
 build_fastrpc_package() {
-    local repo_dir
-    repo_dir="$(_mktemp)"
+    local work_dir
+    work_dir="$(_mktemp)"
 
     info "正在安装 fastrpc 构建依赖..."
-    sudo apt install -y automake autoconf libtool pkg-config libyaml-dev libbsd-dev
+    sudo apt-get install -y build-essential autoconf automake libtool pkg-config \
+        git wget unzip dpkg-dev libyaml-dev linux-libc-dev
 
-    info "正在拉取 fastrpc 源码..."
-    git clone https://github.com/qualcomm/fastrpc.git \
-        --depth 1 "$repo_dir"
+    info "正在下载 fastrpc 源码..."
+    wget -q https://github.com/qualcomm/fastrpc/archive/refs/tags/v1.0.6.zip \
+        -O "$work_dir/v1.0.6.zip"
+    unzip -q "$work_dir/v1.0.6.zip" -d "$work_dir"
 
     info "正在构建 fastrpc..."
-    cd "$repo_dir"
-    ./gitcompile
+    cd "$work_dir/fastrpc-1.0.6"
+    autoreconf -is
+    ./configure --prefix=/usr
+    make -j"$(nproc)"
+    mkdir -p stage
+    make DESTDIR="$PWD/stage" install
+
+    info "正在添加 systemd service..."
+    mkdir -p stage/usr/lib/systemd/system
+    if [[ -f "$OLDPWD/patches/adsprpcd-sensorspd.service" ]]; then
+        cp "$OLDPWD/patches/adsprpcd-sensorspd.service" \
+            stage/usr/lib/systemd/system/
+    else
+        warn "patches/adsprpcd-sensorspd.service 未找到，跳过 systemd service"
+    fi
     cd - >/dev/null
 
     info "正在打包 fastrpc.deb..."
-    local pkg="$repo_dir/deb"
-    mkdir -p "$pkg/DEBIAN" "$pkg/usr/lib" "$pkg/usr/bin"
-
-    # 安装库文件（6 个 .so）
-    install -m 0644 "$repo_dir/src/.libs/libadsprpc.so"            "$pkg/usr/lib/libadsprpc.so"
-    install -m 0644 "$repo_dir/src/.libs/libadsp_default_listener.so" "$pkg/usr/lib/libadsp_default_listener.so"
-    install -m 0644 "$repo_dir/src/.libs/libcdsprpc.so"            "$pkg/usr/lib/libcdsprpc.so"
-    install -m 0644 "$repo_dir/src/.libs/libcdsp_default_listener.so" "$pkg/usr/lib/libcdsp_default_listener.so"
-    install -m 0644 "$repo_dir/src/.libs/libsdsprpc.so"            "$pkg/usr/lib/libsdsprpc.so"
-    install -m 0644 "$repo_dir/src/.libs/libsdsp_default_listener.so" "$pkg/usr/lib/libsdsp_default_listener.so"
-
-    # 安装守护进程（3 个 rpcd）
-    install -m 0755 "$repo_dir/src/adsprpcd" "$pkg/usr/bin/adsprpcd"
-    install -m 0755 "$repo_dir/src/cdsprpcd" "$pkg/usr/bin/cdsprpcd"
-    install -m 0755 "$repo_dir/src/sdsprpcd" "$pkg/usr/bin/sdsprpcd"
+    local pkg="$work_dir/deb"
+    mkdir -p "$pkg/DEBIAN"
+    cp -r "$work_dir/fastrpc-1.0.6/stage/usr" "$pkg/"
 
     cat > "$pkg/DEBIAN/control" << CONTROL
-Package: qualcomm-fastrpc
-Version: 1.0-1
+Package: fastrpc
+Version: 1.0.6-1
 Section: libs
 Priority: optional
 Architecture: arm64
-Maintainer: sheng-builder
-Depends: libyaml-0-2
-Description: Qualcomm FastRPC userspace libraries and daemons
- FastRPC user-space libraries and daemons for ADSP, CDSP, and SDSP
- communication on Qualcomm SoCs.
+Maintainer: Fauzan Amir Al Ghiffary <alghiffaryfa19@gmail.com>
+Depends: libyaml-0-2, systemd
+Description: Qualcomm FastRPC userspace library
+ FastRPC implementation for Qualcomm DSP communication.
 CONTROL
 
-    dpkg-deb --build --root-owner-group "$pkg" "./qualcomm-fastrpc_1.0-1_arm64.deb"
-    info "qualcomm-fastrpc.deb 打包完成：qualcomm-fastrpc_1.0-1_arm64.deb"
+    find "$pkg" -type d -exec chmod 755 {} \;
+    find "$pkg" -type f -exec chmod 644 {} \;
+    dpkg-deb --build "$pkg" "./fastrpc_1.0.6-1_arm64.deb"
+    info "fastrpc.deb 打包完成：fastrpc_1.0.6-1_arm64.deb"
 }
 
 usr_merge_and_package() {
